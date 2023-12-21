@@ -849,6 +849,7 @@ bool HidRawSensor::findSensorControlUsage(const std::vector<HidParser::ReportPac
     using namespace Hid::Sensor::PowerStateUsage;
     using namespace Hid::Sensor::PropertyUsage;
     using namespace Hid::Sensor::ReportingStateUsage;
+    using namespace Hid::Sensor::LeTransportUsage;
 
     //REPORTING_STATE
     const HidParser::ReportItem *reportingState
@@ -948,6 +949,26 @@ bool HidRawSensor::findSensorControlUsage(const std::vector<HidParser::ReportPac
             mLeTransportId = leTransport->id;
             mLeTransportBitOffset = leTransport->bitOffset;
             mLeTransportBitSize = leTransport->bitSize;
+
+            mLeTransportAclIndex = -1;
+            mLeTransportIsoIndex = -1;
+            for (unsigned i = 0; i < leTransport->usageVector.size(); ++i) {
+                if (leTransport->usageVector[i] == LE_TRANSPORT_ACL) {
+                    mLeTransportAclIndex = i;
+                }
+                if (leTransport->usageVector[i] == LE_TRANSPORT_ISO) {
+                    mLeTransportIsoIndex = i;
+                }
+            }
+            if (mLeTransportAclIndex < 0) {
+                LOG_W << "Cannot find LE transport to enable ACL"
+                        << LOG_ENDL;
+                mLeTransportId = -1;
+            }
+            if (mLeTransportIsoIndex < 0) {
+                LOG_W << "Cannot find LE transport to enable ISO" << LOG_ENDL;
+                mLeTransportId = -1;
+            }
         }
     }
 
@@ -977,15 +998,12 @@ int HidRawSensor::enable(bool enable) {
     std::vector<uint8_t> buffer;
     // TODO(b/298450041): Refactor the operations below in a separate function.
     bool setLeAudioTransportOk = true;
-    if (mLeTransportId >= 0) {
+    if (mLeTransportId >= 0 && enable) {
         setLeAudioTransportOk = false;
         uint8_t id = static_cast<uint8_t>(mLeTransportId);
         if (device->getFeature(id, &buffer)
                 && (8 * buffer.size()) >=
                         (mLeTransportBitOffset + mLeTransportBitSize)) {
-            constexpr uint8_t kLeAclValue = 0;
-            constexpr uint8_t kLeIsoValue = 1;
-
             // The following property, if defined, represents a comma-separated list of
             // transport preferences for the following types: le-acl or iso-[sw|hw],
             // which describes the priority list of transport selections used based on the
@@ -999,17 +1017,18 @@ int HidRawSensor::enable(bool enable) {
             }
 
             uint16_t capability = mFeatureInfo.version & 0x0000FFFF;
-            uint8_t value;
+            uint8_t index;
             if (capability == (kIsoBitMask | kAclBitMask)) {
                 if (!priorityList.empty() && priorityList[0].compare("le-acl") == 0) {
-                    value = kLeAclValue;
+                    index = mLeTransportAclIndex;
                 } else {
-                    value = kLeIsoValue;
+                    index = mLeTransportIsoIndex;
                 }
             } else {
-                value = (capability & kIsoBitMask) ? kLeIsoValue : kLeAclValue;
+                index = (capability & kIsoBitMask) ? mLeTransportIsoIndex : mLeTransportAclIndex;
             }
-            HidUtil::copyBits(&value, &(buffer[0]), buffer.size(), 0,
+
+            HidUtil::copyBits(&index, &(buffer[0]), buffer.size(), 0,
                               mLeTransportBitOffset, mLeTransportBitSize);
             setLeAudioTransportOk = device->setFeature(id, buffer);
             if (!setLeAudioTransportOk) {
